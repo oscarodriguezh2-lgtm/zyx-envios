@@ -155,10 +155,17 @@ function enviaErr(j){ const m=(j&&j.error&&(j.error.message||j.error))||(j&&j.me
 function enviaPackage(quote){ const p=quote.parcels[0]||{}; return { type:'box', content:'Mercancía', amount:1, declaredValue:Number(quote.declared_value)||0,
   weightUnit:'KG', lengthUnit:'CM', weight:Number(p.weight)||1,
   dimensions:{ length:Number(p.length)||1, width:Number(p.width)||1, height:Number(p.height)||1 } }; }
+async function geocode(pc){
+  try{ const r = await fetch(`https://geocodes.envia.com/zipcode/MX/${encodeURIComponent(String(pc||''))}`);
+    const j = await r.json(); const d = Array.isArray(j.data)?j.data[0]:j.data;
+    return d ? { city:d.city||'', state:d.state||'' } : {}; }
+  catch{ return {}; }
+}
 async function quoteRatesReal(quote){
+  const [og,dg] = await Promise.all([ geocode(quote.origin_postal_code), geocode(quote.destination_postal_code) ]);
   const body = {
-    origin:{ country:'MX', postalCode:String(quote.origin_postal_code||'') },
-    destination:{ country:'MX', postalCode:String(quote.destination_postal_code||'') },
+    origin:{ country:'MX', postalCode:String(quote.origin_postal_code||''), city:og.city||'N/D', state:og.state||'' },
+    destination:{ country:'MX', postalCode:String(quote.destination_postal_code||''), city:dg.city||'N/D', state:dg.state||'' },
     packages:[ enviaPackage(quote) ], shipment:{ type:1 }, settings:{ currency:'MXN' }
   };
   const r = await fetch(`${ENV_API_BASE}/ship/rate/`, {method:'POST',headers:{'Authorization':`Bearer ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
@@ -187,11 +194,12 @@ app.post('/api/shipments', auth, async (req,res)=>{
     if(ENV_API_KEY){
       // Modo real: genera la guía en envia.com y toma el costo real
       const parts = String(service_id).split('||'); const carrier=parts[0]||''; const service=parts[1]||'';
-      const addr = (a,pc)=>({ name:a.name||a.nombre||'—', company:a.company||a.empresa||'', email:a.email||a.correo||'', phone:String(a.phone||a.telefono||a.tel||'0000000000'),
+      const [og,dg] = await Promise.all([ geocode(quote.origin_postal_code), geocode(quote.destination_postal_code) ]);
+      const addr = (a,pc,g)=>({ name:a.name||a.nombre||'—', company:a.company||a.empresa||'', email:a.email||a.correo||'', phone:String(a.phone||a.telefono||a.tel||'0000000000'),
         street:a.street||a.calle||'—', number:String(a.number||a.numero||a.num||'0'), district:a.district||a.colonia||a.neighborhood||'',
-        city:a.city||a.ciudad||'', state:a.state||a.estado||'', country:'MX',
+        city:a.city||a.ciudad||g.city||'N/D', state:a.state||a.estado||g.state||'', country:'MX',
         postalCode:String(a.postalCode||a.postal_code||a.cp||a.zip||pc||''), reference:a.reference||a.referencia||'' });
-      const body = { origin:addr(remitente, quote.origin_postal_code), destination:addr(destinatario, quote.destination_postal_code),
+      const body = { origin:addr(remitente, quote.origin_postal_code, og), destination:addr(destinatario, quote.destination_postal_code, dg),
         packages:[ enviaPackage(quote) ], shipment:{ type:1, carrier, service }, settings:{ printFormat:'PDF', printSize:'STOCK_4X6' } };
       const r = await fetch(`${ENV_API_BASE}/ship/generate/`,{method:'POST',headers:{'Authorization':`Bearer ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
       const j = await r.json(); if(!r.ok || j.meta==='error' || !Array.isArray(j.data) || !j.data.length) return res.status(502).json({errors:[enviaErr(j)]});
