@@ -163,16 +163,27 @@ async function geocode(pc){
     return { city:d.locality||d.city||'', state }; }
   catch{ return {}; }
 }
+const MX_CARRIERS = (process.env.ENV_CARRIERS || 'fedex,dhl,estafeta,redpack,paquetexpress,sendex,99minutos,ampm').split(',').map(s=>s.trim()).filter(Boolean);
+async function rateOneCarrier(baseBody, carrier){
+  try{
+    const body = Object.assign({}, baseBody, { shipment:{ type:1, carrier } });
+    const r = await fetch(`${ENV_API_BASE}/ship/rate/`, {method:'POST',headers:{'Authorization':`Bearer ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+    const j = await r.json();
+    if(!r.ok || j.meta==='error' || !Array.isArray(j.data)) return [];
+    return j.data;
+  }catch{ return []; }
+}
 async function quoteRatesReal(quote){
   const [og,dg] = await Promise.all([ geocode(quote.origin_postal_code), geocode(quote.destination_postal_code) ]);
-  const body = {
+  const baseBody = {
     origin:{ country:'MX', postalCode:String(quote.origin_postal_code||''), city:og.city||'N/D', state:og.state||'' },
     destination:{ country:'MX', postalCode:String(quote.destination_postal_code||''), city:dg.city||'N/D', state:dg.state||'' },
-    packages:[ enviaPackage(quote) ], shipment:{ type:1, carrier:'' }, settings:{ currency:'MXN' }
+    packages:[ enviaPackage(quote) ], settings:{ currency:'MXN' }
   };
-  const r = await fetch(`${ENV_API_BASE}/ship/rate/`, {method:'POST',headers:{'Authorization':`Bearer ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
-  const j = await r.json(); if(!r.ok || j.meta==='error' || !Array.isArray(j.data)) throw new Error(enviaErr(j));
-  return j.data.map((rate,i)=>{ const cost=Number(rate.totalPrice)||0; const sell=Math.round(cost*(1+marginFor(rate.carrierDescription||rate.carrier)/100));
+  const lists = await Promise.all(MX_CARRIERS.map(c=>rateOneCarrier(baseBody, c)));
+  const all = lists.flat();
+  if(!all.length) throw new Error('Sin tarifas disponibles para esta ruta con las paqueterías contratadas en tu cuenta de envia.com.');
+  return all.map((rate,i)=>{ const cost=Number(rate.totalPrice)||0; const sell=Math.round(cost*(1+marginFor(rate.carrierDescription||rate.carrier)/100));
     const dd=rate.deliveryDate||{}; const days=(typeof dd.dateDifference==='number')?dd.dateDifference:(parseInt(rate.deliveryEstimate,10)||1);
     return { service_id:`${rate.carrier}||${rate.service}||${i}`, carrier_name:rate.carrierDescription||rate.carrier, service_name:rate.serviceDescription||rate.service, days,
       total:sell, currency:rate.currency||'MXN', has_pickup:!Number(rate.dropOff), description:rate.deliveryEstimate||(days+(days===1?' día':' días')),
@@ -184,7 +195,7 @@ app.post('/api/quotes', auth, async (req,res)=>{
   catch(err){ res.status(502).json({errors:[err.message]}); }
 });
 
-/* =====================================================================
+/* ====================================================================
    GENERAR GUÍA — cobra del saldo
 ===================================================================== */
 app.post('/api/shipments', auth, async (req,res)=>{
