@@ -157,8 +157,10 @@ function enviaPackage(quote){ const p=quote.parcels[0]||{}; return { type:'box',
   dimensions:{ length:Number(p.length)||1, width:Number(p.width)||1, height:Number(p.height)||1 } }; }
 async function geocode(pc){
   try{ const r = await fetch(`https://geocodes.envia.com/zipcode/MX/${encodeURIComponent(String(pc||''))}`);
-    const j = await r.json(); const d = Array.isArray(j.data)?j.data[0]:j.data;
-    return d ? { city:d.city||'', state:d.state||'' } : {}; }
+    const j = await r.json(); const d = Array.isArray(j)?j[0]:(Array.isArray(j.data)?j.data[0]:j.data); if(!d) return {};
+    const st = d.state;
+    const state = (st && (st.code?.['2digit'] || st.code?.['3digit'] || st.name)) || (typeof st==='string'?st:'') || '';
+    return { city:d.locality||d.city||'', state }; }
   catch{ return {}; }
 }
 async function quoteRatesReal(quote){
