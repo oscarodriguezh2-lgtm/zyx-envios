@@ -168,7 +168,7 @@ async function quoteRatesReal(quote){
   const body = {
     origin:{ country:'MX', postalCode:String(quote.origin_postal_code||''), city:og.city||'N/D', state:og.state||'' },
     destination:{ country:'MX', postalCode:String(quote.destination_postal_code||''), city:dg.city||'N/D', state:dg.state||'' },
-    packages:[ enviaPackage(quote) ], shipment:{ type:1 }, settings:{ currency:'MXN' }
+    packages:[ enviaPackage(quote) ], shipment:{ type:1, carrier:'' }, settings:{ currency:'MXN' }
   };
   const r = await fetch(`${ENV_API_BASE}/ship/rate/`, {method:'POST',headers:{'Authorization':`Bearer ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
   const j = await r.json(); if(!r.ok || j.meta==='error' || !Array.isArray(j.data)) throw new Error(enviaErr(j));
