@@ -1,0 +1,16 @@
+{
+  "name": "zyx-envios",
+  "version": "1.0.0",
+  "description": "Plataforma de reventa de guías ZYX Envíos",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "engines": { "node": ">=18" },
+  "dependencies": {
+    "express": "^4.19.2"
+  },
+  "optionalDependencies": {
+    "nodemailer": "^6.9.14"
+  }
+}
