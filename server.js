@@ -1,4 +1,4 @@
-/* ==================================================================
+/* =====================================================================
    ZYX Envíos — Backend real con persistencia (Node + Express)
    ---------------------------------------------------------------------
    - Persistencia en archivo JSON (data.json). Cero dependencias nativas.
@@ -30,7 +30,7 @@ const SECRET      = process.env.SESSION_SECRET || 'cambia-este-secreto-en-produc
 const ADMIN_EMAIL = (process.env.ADMIN_EMAIL || 'admin@zyx.mx').toLowerCase();
 const APP_URL     = process.env.APP_URL || '';
 const ENV_API_KEY = process.env.ENV_API_KEY || '';
-const ENV_API_BASE= process.env.ENV_API_BASE || 'https://app.env.com.mx';
+const ENV_API_BASE= process.env.ENV_API_BASE || 'https://api.envia.com';
 const ALLOW_DEV_LOGIN = (process.env.ALLOW_DEV_LOGIN || 'true') === 'true';
 const DB_FILE     = process.env.DB_FILE || path.join(__dirname, 'data.json');
 
@@ -151,13 +151,23 @@ function quoteRatesMock(quote){
       description:c.days+(c.days===1?' día hábil':' días hábiles'), features:c.feats, _color:c.color, _ink:c.ink||'#fff' };
   });
 }
+function enviaErr(j){ const m=(j&&j.error&&(j.error.message||j.error))||(j&&j.message)||'Error en la API de envia.com'; return typeof m==='string'?m:JSON.stringify(m); }
+function enviaPackage(quote){ const p=quote.parcels[0]||{}; return { type:'box', content:'Mercancía', amount:1, declaredValue:Number(quote.declared_value)||0,
+  weightUnit:'KG', lengthUnit:'CM', weight:Number(p.weight)||1,
+  dimensions:{ length:Number(p.length)||1, width:Number(p.width)||1, height:Number(p.height)||1 } }; }
 async function quoteRatesReal(quote){
-  const r = await fetch(`${ENV_API_BASE}/partners/v1/quotes`, {method:'POST',headers:{'Authorization':`Token ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify({quote})});
-  const j = await r.json(); if(!r.ok) throw new Error((j.errors||['Error de cotización'])[0]);
-  return (j.data||[]).map(rate=>{ const sell=Math.round(rate.total*(1+marginFor(rate.carrier_name)/100));
-    return { service_id:rate.service_id, carrier_name:rate.carrier_name, service_name:rate.service_name, days:rate.days,
-      total:sell, currency:rate.currency||'MXN', has_pickup:rate.has_pickup, description:rate.description||(rate.days+' días'),
-      features:rate.features||['tracking'], _color:'#f9550d', _ink:'#fff', _real:true, _cost:rate.total }; });
+  const body = {
+    origin:{ country:'MX', postalCode:String(quote.origin_postal_code||'') },
+    destination:{ country:'MX', postalCode:String(quote.destination_postal_code||'') },
+    packages:[ enviaPackage(quote) ], shipment:{ type:1 }, settings:{ currency:'MXN' }
+  };
+  const r = await fetch(`${ENV_API_BASE}/ship/rate/`, {method:'POST',headers:{'Authorization':`Bearer ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+  const j = await r.json(); if(!r.ok || j.meta==='error' || !Array.isArray(j.data)) throw new Error(enviaErr(j));
+  return j.data.map((rate,i)=>{ const cost=Number(rate.totalPrice)||0; const sell=Math.round(cost*(1+marginFor(rate.carrierDescription||rate.carrier)/100));
+    const dd=rate.deliveryDate||{}; const days=(typeof dd.dateDifference==='number')?dd.dateDifference:(parseInt(rate.deliveryEstimate,10)||1);
+    return { service_id:`${rate.carrier}||${rate.service}||${i}`, carrier_name:rate.carrierDescription||rate.carrier, service_name:rate.serviceDescription||rate.service, days,
+      total:sell, currency:rate.currency||'MXN', has_pickup:!Number(rate.dropOff), description:rate.deliveryEstimate||(days+(days===1?' día':' días')),
+      features:['tracking'], _color:'#f9550d', _ink:'#fff', _real:true, _cost:cost, _carrier:rate.carrier, _service:rate.service }; });
 }
 app.post('/api/quotes', auth, async (req,res)=>{
   try{ const quote=req.body.quote||req.body; const data = ENV_API_KEY ? await quoteRatesReal(quote) : quoteRatesMock(quote);
@@ -172,17 +182,20 @@ app.post('/api/shipments', auth, async (req,res)=>{
   try{
     const { service_id, quote, destinatario={}, remitente={} } = req.body;
     const u = user(req.email);
-    let cost, carrierName, serviceName, days, tracking, seq;
+    let cost, carrierName, serviceName, days, tracking, seq, labelUrl='';
 
     if(ENV_API_KEY){
-      // Modo real: crea el envío en la Partners API y toma el costo real
-      const payload = { shipment:{
-        origin_attributes:{...remitente, country_code:'MX'},
-        destination_attributes:{...destinatario, country_code:'MX'},
-        parcels_attributes:[quote.parcels[0]], service_id, insure_package:true }};
-      const r = await fetch(`${ENV_API_BASE}/partners/v1/shipments`,{method:'POST',headers:{'Authorization':`Token ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(payload)});
-      const j = await r.json(); if(!r.ok) return res.status(r.status).json(j);
-      const d=j.data; cost=d.total_cost; carrierName=d.carrier_name; serviceName=d.service_name; days=d.estimated_delivery_days; tracking=d.tracking_number; seq=d.sequential_id;
+      // Modo real: genera la guía en envia.com y toma el costo real
+      const parts = String(service_id).split('||'); const carrier=parts[0]||''; const service=parts[1]||'';
+      const addr = (a,pc)=>({ name:a.name||a.nombre||'—', company:a.company||a.empresa||'', email:a.email||a.correo||'', phone:String(a.phone||a.telefono||a.tel||'0000000000'),
+        street:a.street||a.calle||'—', number:String(a.number||a.numero||a.num||'0'), district:a.district||a.colonia||a.neighborhood||'',
+        city:a.city||a.ciudad||'', state:a.state||a.estado||'', country:'MX',
+        postalCode:String(a.postalCode||a.postal_code||a.cp||a.zip||pc||''), reference:a.reference||a.referencia||'' });
+      const body = { origin:addr(remitente, quote.origin_postal_code), destination:addr(destinatario, quote.destination_postal_code),
+        packages:[ enviaPackage(quote) ], shipment:{ type:1, carrier, service }, settings:{ printFormat:'PDF', printSize:'STOCK_4X6' } };
+      const r = await fetch(`${ENV_API_BASE}/ship/generate/`,{method:'POST',headers:{'Authorization':`Bearer ${ENV_API_KEY}`,'Content-Type':'application/json'},body:JSON.stringify(body)});
+      const j = await r.json(); if(!r.ok || j.meta==='error' || !Array.isArray(j.data) || !j.data.length) return res.status(502).json({errors:[enviaErr(j)]});
+      const d=j.data[0]; cost=Number(d.totalPrice)||0; carrierName=d.carrierDescription||d.carrier; serviceName=d.serviceDescription||d.service; days=0; tracking=d.trackingNumber; seq='SH-'+(d.shipmentId||(++db.counters.sh)); labelUrl=d.label||'';
     } else {
       const i = parseInt(String(service_id).split('-')[1],10); const c = CARRIERS[i]; if(!c) return res.status(404).json({errors:['Servicio no encontrado']});
       const p=quote.parcels[0]; const w=Math.max(p.weight, volWeight(p.length,p.width,p.height));
@@ -193,7 +206,7 @@ app.post('/api/shipments', auth, async (req,res)=>{
     const sell = Math.round(cost*(1+marginFor(carrierName)/100));
     if(u.balance < sell) return res.status(402).json({errors:['Saldo insuficiente'], required:sell, balance:u.balance});
     u.balance -= sell;
-    const record = { id:seq, email:req.email, dest:destinatario.name||'—', city:destinatario.city||'', carrier:carrierName, service:serviceName, cost, sell, tracking, date:now() };
+    const record = { id:seq, email:req.email, dest:destinatario.name||destinatario.nombre||'—', city:destinatario.city||destinatario.ciudad||'', carrier:carrierName, service:serviceName, cost, sell, tracking, label:labelUrl, date:now() };
     db.shipments.unshift(record); save();
     res.status(201).json({ balance:u.balance, shipment:record, sequential_id:seq, tracking_number:tracking, carrier_name:carrierName, service_name:serviceName, estimated_delivery_days:days, sell });
   }catch(err){ res.status(502).json({errors:[err.message]}); }
