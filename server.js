@@ -121,6 +121,23 @@ app.post('/api/auth/request', async (req,res)=>{
   res.json(out);
 });
 
+/* ---------- Login/registro con contraseña ---------- */
+function hashPassword(pw){ const salt=crypto.randomBytes(16).toString('hex'); const h=crypto.scryptSync(String(pw),salt,32).toString('hex'); return salt+':'+h; }
+function verifyPassword(pw,stored){ try{ if(!stored||!stored.includes(':'))return false; const [salt,h]=stored.split(':'); const hh=crypto.scryptSync(String(pw),salt,32).toString('hex'); const a=Buffer.from(h,'hex'), b=Buffer.from(hh,'hex'); return a.length===b.length && crypto.timingSafeEqual(a,b); }catch{ return false; } }
+app.post('/api/auth/login', (req,res)=>{
+  const email = String(req.body.email||'').trim().toLowerCase();
+  const pw = String(req.body.password||'');
+  const u = db.users[email];
+  if(!u || !u.passwordHash || !verifyPassword(pw, u.passwordHash)) return res.status(401).json({errors:['Correo o contraseña incorrectos']});
+  res.json({ ok:true, token: sign(email), role: email===ADMIN_EMAIL?'admin':'user' });
+});
+app.post('/api/auth/set-password', auth, (req,res)=>{
+  const pw = String(req.body.password||'');
+  if(pw.length < 6) return res.status(422).json({errors:['La contraseña debe tener al menos 6 caracteres']});
+  const u = user(req.email); u.passwordHash = hashPassword(pw); save();
+  res.json({ ok:true });
+});
+
 /* ---------- Bootstrap: carga inicial de datos según rol ---------- */
 app.get('/api/bootstrap', auth, (req,res)=>{
   if(req.isAdmin){
@@ -132,7 +149,7 @@ app.get('/api/bootstrap', auth, (req,res)=>{
   }
   const u = user(req.email);
   res.json({ email:req.email, role:'user',
-    me:{email:u.email, balance:u.balance, createdAt:u.createdAt},
+    me:{email:u.email, balance:u.balance, createdAt:u.createdAt, hasPassword:!!u.passwordHash},
     settings:{ promos:db.settings.promos, bank:db.settings.bank },
     recharges: db.recharges.filter(r=>r.email===req.email),
     shipments: db.shipments.filter(s=>s.email===req.email) });
@@ -195,7 +212,7 @@ app.post('/api/quotes', auth, async (req,res)=>{
   catch(err){ res.status(502).json({errors:[err.message]}); }
 });
 
-/* ====================================================================
+/* =====================================================================
    GENERAR GUÍA — cobra del saldo
 ===================================================================== */
 app.post('/api/shipments', auth, async (req,res)=>{
@@ -251,6 +268,7 @@ app.put('/api/admin/settings', auth, adminOnly, (req,res)=>{
   if(req.body.margin!=null) db.settings.margin=Number(req.body.margin);
   if(req.body.overrides) db.settings.overrides=req.body.overrides;
   if(req.body.promos) db.settings.promos=req.body.promos.filter(t=>t.min>0).sort((a,b)=>a.min-b.min);
+  if(req.body.bank) db.settings.bank=Object.assign({}, db.settings.bank, req.body.bank);
   save(); res.json(db.settings);
 });
 app.post('/api/admin/recharges/:id/:action', auth, adminOnly, (req,res)=>{
